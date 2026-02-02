@@ -6,7 +6,7 @@
   --line:#222a41;
 
   --wait:#3b82f6;
-  --mesa:#22c55e;
+  --valid:#22c55e;
   --camb:#f59e0b;
   --scan:#ef4444;
   --out:#94a3b8;
@@ -84,7 +84,7 @@ h2{
 }
 
 .timeline{
-  height: calc(70vh - 90px);
+  height: calc(70vh - 130px);
   border:1px dashed #2a3564;
   border-radius:12px;
   position:relative;
@@ -102,10 +102,15 @@ h2{
 .row:last-child{ border-bottom:none; }
 
 .label{
-  width:62px;
+  width:78px;
   color:var(--muted);
   font-size:12px;
+  display:flex;
+  flex-direction:column;
+  gap:2px;
 }
+.label .id { color: var(--text); font-weight:600; }
+.label .meta { color: var(--muted); font-size:11px; }
 
 .track{
   flex:1;
@@ -114,6 +119,7 @@ h2{
   background:rgba(255,255,255,0.03);
   border:1px solid rgba(255,255,255,0.06);
   border-radius:999px;
+  min-width: 900px;
 }
 
 .seg{
@@ -132,10 +138,17 @@ h2{
   color:var(--text);
 }
 .c-wait{ background: color-mix(in srgb, var(--wait) 30%, transparent); }
-.c-mesa{ background: color-mix(in srgb, var(--mesa) 30%, transparent); }
+.c-valid{ background: color-mix(in srgb, var(--valid) 30%, transparent); }
 .c-camb{ background: color-mix(in srgb, var(--camb) 30%, transparent); }
 .c-scan{ background: color-mix(in srgb, var(--scan) 30%, transparent); }
 .c-out{  background: color-mix(in srgb, var(--out) 30%, transparent); }
+
+.notes{
+  margin-top:10px;
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.35;
+}
 
 .viewport{
   height: calc(70vh - 40px);
@@ -146,13 +159,4 @@ h2{
 
 .hud{
   position:absolute;
-  left:14px;
-  bottom:12px;
-  font-size:12px;
-  color:var(--muted);
-  background:rgba(0,0,0,0.35);
-  border:1px solid rgba(255,255,255,0.08);
-  padding:8px 10px;
-  border-radius:12px;
-  backdrop-filter: blur(8px);
-}
+  le
