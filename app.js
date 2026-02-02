@@ -1,8 +1,10 @@
-// app.js — UI (Timeline 2D + Three.js 3D)
 import * as THREE from "three";
 import { makeEngine, clamp } from "./engine.js";
 
 const elTimeline = document.getElementById("timeline");
+const elTimelineScroll = document.getElementById("timelineScroll");
+const elRuler = document.getElementById("timeRuler");
+const elNowMarker = document.getElementById("nowMarker");
 const elViewport = document.getElementById("viewport");
 
 const btnStart = document.getElementById("btnStart");
@@ -21,6 +23,12 @@ const hudLostWait = document.getElementById("hudLostWait");
 const hudMaxWait = document.getElementById("hudMaxWait");
 const hudLastStart = document.getElementById("hudLastStart");
 
+const excelHead = document.getElementById("excelHead");
+const excelBody = document.getElementById("excelBody");
+
+// Escala timeline
+const PX_PER_MIN = 6;
+
 const STAGE_COLOR = {
   WAIT:  getCss("--wait"),
   VALID: getCss("--valid"),
@@ -34,34 +42,104 @@ function getCss(varName){
 }
 
 function fmtHHMM(minDay){
+  if (minDay == null || Number.isNaN(minDay)) return "--:--";
   const h = Math.floor(minDay / 60);
   const m = Math.floor(minDay % 60);
   return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`;
 }
 
 function fmtSignedMin(x){
+  if (x == null || Number.isNaN(x)) return "";
   const s = x >= 0 ? "+" : "";
-  return `${s}${x.toFixed(1)}m`;
+  return `${s}${x.toFixed(1)}`;
+}
+
+function sumStage(timeline, stage){
+  let s = 0;
+  for (const seg of timeline){
+    if (seg.stage !== stage) continue;
+    const a = seg.start;
+    const b = seg.end ?? seg.start;
+    s += Math.max(0, b - a);
+  }
+  return s;
+}
+
+function firstStageStart(timeline, stage){
+  let best = null;
+  for (const seg of timeline){
+    if (seg.stage !== stage) continue;
+    if (best == null || seg.start < best) best = seg.start;
+  }
+  return best;
+}
+
+function lastStageEnd(timeline, stage){
+  let best = null;
+  for (const seg of timeline){
+    if (seg.stage !== stage) continue;
+    const end = seg.end ?? null;
+    if (end == null) continue;
+    if (best == null || end > best) best = end;
+  }
+  return best;
 }
 
 // ===== Engine =====
 let engine = makeEngine({ seed: Number(elSeed.value || 42) });
 
+// ===== Timeline: ruler + marker =====
+function renderRuler(cfg){
+  const t0 = cfg.simStartMin;
+  const t1 = cfg.closeMin;
+  const span = t1 - t0;
+  const widthPx = span * PX_PER_MIN;
+
+  elRuler.innerHTML = "";
+  const inner = document.createElement("div");
+  inner.className = "rulerInner";
+  inner.style.width = `${widthPx + 120}px`; // + margen para que no quede justo
+  elRuler.appendChild(inner);
+
+  // ticks: cada 15 min; major cada 60 min
+  for (let m = t0; m <= t1; m += 15) {
+    const x = (m - t0) * PX_PER_MIN + 120; // +120 para alinear con label column-ish
+    const tick = document.createElement("div");
+    tick.className = "rTick" + ((m % 60 === 0) ? " major" : "");
+    tick.style.left = `${x}px`;
+    inner.appendChild(tick);
+
+    if (m % 60 === 0) {
+      const lab = document.createElement("div");
+      lab.className = "rLabel";
+      lab.style.left = `${x}px`;
+      lab.textContent = fmtHHMM(m);
+      inner.appendChild(lab);
+    }
+  }
+
+  // Alineación: el contenido de timeline empieza con padding + label column.
+  // Usamos el mismo offset (120px) al calcular seg.left en renderTimeline.
+}
+
+function updateNowMarker(cfg, nowMin){
+  const t0 = cfg.simStartMin;
+  const t1 = cfg.closeMin;
+  const clamped = clamp(nowMin, t0, t1);
+  const x = (clamped - t0) * PX_PER_MIN + 120;
+  elNowMarker.style.transform = `translateX(${x}px)`;
+}
+
 // ===== Timeline 2D =====
 function renderTimeline(snapshot){
-  // Escala: 1 min = 6px (ajustable)
-  const pxPerMin = 6;
-
-  const t0 = snapshot.cfg.simStartMin;
-  const t1 = snapshot.cfg.closeMin;
+  const cfg = snapshot.cfg;
+  const t0 = cfg.simStartMin;
+  const t1 = cfg.closeMin;
   const span = t1 - t0;
+  const trackWidth = span * PX_PER_MIN;
 
-  // Ordenar pacientes por id numérico
-  const rows = snapshot.entities.slice().sort((a,b) => {
-    const ai = Number(a.id.slice(1));
-    const bi = Number(b.id.slice(1));
-    return ai - bi;
-  });
+  // Filas: mostramos activos + completados + perdidos (en orden de seq)
+  const rows = collectAllRows(snapshot).sort((a,b) => (a.seq ?? 999) - (b.seq ?? 999));
 
   elTimeline.innerHTML = "";
 
@@ -78,27 +156,27 @@ function renderTimeline(snapshot){
 
     const metaDiv = document.createElement("div");
     metaDiv.className = "meta";
-
-    const appt = (e.apptAt != null) ? fmtHHMM(e.apptAt) : "--:--";
-    const arr  = (e.arrivalAt != null) ? fmtHHMM(e.arrivalAt) : "--:--";
-    const off  = (e.arrivalOffset != null) ? fmtSignedMin(e.arrivalOffset) : "";
-    metaDiv.textContent = `${e.study} | T:${appt} L:${arr} ${off}`;
+    const appt = fmtHHMM(e.apptAt);
+    const arr  = fmtHHMM(e.arrivalAt);
+    const off  = fmtSignedMin(e.arrivalOffset);
+    metaDiv.textContent = `${e.study} | T:${appt} L:${arr} ${off ? `(${off}m)` : ""}`;
 
     label.appendChild(idDiv);
     label.appendChild(metaDiv);
 
     const track = document.createElement("div");
     track.className = "track";
-    track.style.width = `${span * pxPerMin}px`;
+    track.style.width = `${trackWidth + 120}px`; // +120 por offset visual
 
+    // segmentos
     e.timeline.forEach(seg => {
       const start = clamp(seg.start, t0, t1);
       const end = clamp(seg.end ?? snapshot.t, t0, t1);
-      const w = Math.max(1, (end - start) * pxPerMin);
+      const w = Math.max(1, (end - start) * PX_PER_MIN);
 
       const div = document.createElement("div");
       div.className = "seg";
-      div.style.left = `${(start - t0) * pxPerMin}px`;
+      div.style.left = `${(start - t0) * PX_PER_MIN + 120}px`;
       div.style.width = `${w}px`;
       div.style.background = STAGE_COLOR[seg.stage] || "#777";
       track.appendChild(div);
@@ -108,6 +186,90 @@ function renderTimeline(snapshot){
     row.appendChild(track);
     elTimeline.appendChild(row);
   });
+
+  // regla/marker
+  if (!elRuler.dataset.built) {
+    renderRuler(cfg);
+    elRuler.dataset.built = "1";
+  }
+  updateNowMarker(cfg, snapshot.t);
+}
+
+// ===== Excel =====
+function renderExcel(snapshot){
+  const rows = collectAllRows(snapshot).sort((a,b) => (a.seq ?? 999) - (b.seq ?? 999));
+
+  // Header fijo
+  excelHead.innerHTML = `
+    <tr>
+      <th>#</th>
+      <th>ID</th>
+      <th>Estudio</th>
+      <th>Turno</th>
+      <th>Llegada</th>
+      <th>Offset (min)</th>
+      <th>WAIT total (min)</th>
+      <th>Valid (min)</th>
+      <th>Camb (min)</th>
+      <th>Scan (min)</th>
+      <th>Salida (min)</th>
+      <th>Inicio Scan</th>
+      <th>Fin</th>
+      <th>Estado</th>
+    </tr>
+  `;
+
+  excelBody.innerHTML = "";
+
+  rows.forEach(r => {
+    const tl = r.timeline || [];
+    const waitTot = sumStage(tl, "WAIT");
+    const valid = sumStage(tl, "VALID");
+    const camb  = sumStage(tl, "CAMB");
+    const scan  = sumStage(tl, "SCAN");
+    const out   = sumStage(tl, "OUT");
+
+    const scanStart = firstStageStart(tl, "SCAN");     // inicio SCAN
+    const endAt = r.endAt ?? lastStageEnd(tl, "OUT") ?? lastStageEnd(tl, "SCAN") ?? null;
+
+    const status = r.status || "ACTIVO";
+    const badge = statusToBadge(status);
+
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${r.seq ?? ""}</td>
+      <td>${r.id}</td>
+      <td>${r.study}</td>
+      <td>${fmtHHMM(r.apptAt)}</td>
+      <td>${fmtHHMM(r.arrivalAt)}</td>
+      <td>${r.arrivalOffset != null ? fmtSignedMin(r.arrivalOffset) : ""}</td>
+      <td>${waitTot.toFixed(1)}</td>
+      <td>${valid.toFixed(1)}</td>
+      <td>${camb.toFixed(1)}</td>
+      <td>${scan.toFixed(1)}</td>
+      <td>${out.toFixed(1)}</td>
+      <td>${fmtHHMM(scanStart)}</td>
+      <td>${fmtHHMM(endAt)}</td>
+      <td>${badge}</td>
+    `;
+    excelBody.appendChild(tr);
+  });
+}
+
+function statusToBadge(status){
+  if (status === "OK") return `<span class="badge ok">OK</span>`;
+  if (status === "PERDIDO_ESPERA") return `<span class="badge lw">Perdido espera</span>`;
+  if (status === "PERDIDO_CIERRE") return `<span class="badge lc">Perdido cierre</span>`;
+  return `<span class="badge">${status}</span>`;
+}
+
+function collectAllRows(snapshot){
+  // Unificamos: activos + completados + perdidos
+  const all = [];
+  for (const a of snapshot.active) all.push(a);
+  for (const c of snapshot.completed) all.push(c);
+  for (const l of snapshot.lostRows) all.push(l);
+  return all;
 }
 
 // ===== Three.js 3D =====
@@ -135,7 +297,7 @@ const floor = new THREE.Mesh(
 floor.rotation.x = -Math.PI / 2;
 scene.add(floor);
 
-// Layout (placeholder geométrico)
+// Layout (placeholder)
 const layout = new THREE.Group();
 scene.add(layout);
 
@@ -147,14 +309,13 @@ function addStation(x, z, w, d, colorHex){
   box.position.set(x, 0.6, z);
   layout.add(box);
 }
-
-addStation(-6, 0, 5, 4, 0x1f3b8a); // WAIT
+addStation(-6, 0, 5, 4, 0x1f3b8a);   // WAIT
 addStation(-3.5, 0, 3, 2, 0x14532d); // VALID
-addStation( 2, 0, 3, 2, 0x7c4a03); // CAMB
-addStation( 6, 0, 4, 3, 0x7f1d1d); // SCAN
+addStation( 2, 0, 3, 2, 0x7c4a03);   // CAMB
+addStation( 6, 0, 4, 3, 0x7f1d1d);   // SCAN
 addStation(10, 0, 2.5, 2, 0x334155); // OUT
 
-// Waypoints visibles
+// Waypoints
 const wpMeshes = new Map();
 function renderWaypoints(wps){
   for (const m of wpMeshes.values()) scene.remove(m);
@@ -192,12 +353,10 @@ function removeMissingPatients(activeIds){
     }
   }
 }
-
 function stageToHex(stage){
   const c = STAGE_COLOR[stage] || "#999999";
   return parseInt(c.replace("#","0x"));
 }
-
 function moveTowards(mesh, target, speedPerFrame){
   const dx = target.x - mesh.position.x;
   const dz = target.z - mesh.position.z;
@@ -239,15 +398,18 @@ btnReset.onclick = () => {
   for (const m of patientMeshes.values()) scene.remove(m);
   patientMeshes.clear();
   wpMeshes.clear();
+
+  // rebuild ruler
+  elRuler.dataset.built = "";
+  elRuler.innerHTML = "";
 };
 
 function tick(nowMs){
   const dtSec = (nowMs - lastMs) / 1000;
   lastMs = nowMs;
 
-  // Simulación: 1s real ~= 1min sim * speed (rápido a propósito)
   if (running) {
-    const dtMin = (dtSec * speed) * 1.0;
+    const dtMin = (dtSec * speed) * 1.0; // 1s real ~= 1min sim * speed
     engine.step(dtMin);
   }
 
@@ -255,27 +417,27 @@ function tick(nowMs){
 
   // HUD
   hudTime.textContent = fmtHHMM(snap.t);
-  hudInSys.textContent = String(snap.entities.length);
+  hudInSys.textContent = String(snap.active.length);
   hudDone.textContent = String(snap.completedCount);
   hudLostClose.textContent = String(snap.lost.byClose);
   hudLostWait.textContent = String(snap.lost.byWait);
   hudMaxWait.textContent = String(snap.stats.maxWaiters);
   hudLastStart.textContent = snap.stats.lastResoStartActual != null ? fmtHHMM(snap.stats.lastResoStartActual) : "--:--";
 
-  // auto-pausa al cierre
   if (snap.t >= snap.cfg.closeMin) running = false;
 
-  // Timeline
+  // Timeline + Excel
   renderTimeline(snap);
+  renderExcel(snap);
 
   // Waypoints
   if (wpMeshes.size === 0) renderWaypoints(snap.waypoints);
 
-  // 3D pacientes
-  const active = new Set(snap.entities.map(e => e.id));
-  removeMissingPatients(active);
+  // 3D pacientes: solo activos
+  const activeIds = new Set(snap.active.map(e => e.id));
+  removeMissingPatients(activeIds);
 
-  snap.entities.forEach(e => {
+  snap.active.forEach(e => {
     const mesh = ensurePatientMesh(e.id);
     mesh.material.color.setHex(stageToHex(e.state));
 
