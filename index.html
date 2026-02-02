@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Simulador Resonador</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="title">Simulador Resonador</div>
+
+    <div class="controls">
+      <button id="btnStart">▶ Start</button>
+      <button id="btnPause">⏸ Pause</button>
+      <button id="btnReset">↺ Reset</button>
+
+      <label class="field">
+        <span>Velocidad</span>
+        <input id="speed" type="range" min="0.25" max="5" step="0.25" value="1" />
+        <span id="speedVal">1.00×</span>
+      </label>
+
+      <label class="field">
+        <span>Seed</span>
+        <input id="seed" type="number" value="42" min="1" step="1" />
+      </label>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="panel">
+      <h2>Timeline 2D</h2>
+      <div id="timeline" class="timeline"></div>
+      <div class="legend">
+        <span class="chip c-wait">Espera</span>
+        <span class="chip c-mesa">Mesa</span>
+        <span class="chip c-camb">Cambiador</span>
+        <span class="chip c-scan">Resonador</span>
+        <span class="chip c-out">Salida</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Vista 3D (layout + waypoints)</h2>
+      <div id="viewport" class="viewport"></div>
+      <div class="hud">
+        <div><b>t</b>: <span id="hudTime">0.0</span> min</div>
+        <div><b>En sistema</b>: <span id="hudInSys">0</span></div>
+        <div><b>Completados</b>: <span id="hudDone">0</span></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Three.js por CDN (ESM) -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.161.0/build/three.module.js"
+      }
+    }
+  </script>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
