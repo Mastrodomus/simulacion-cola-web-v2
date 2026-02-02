@@ -10,6 +10,10 @@
   --camb:#f59e0b;
   --scan:#ef4444;
   --out:#94a3b8;
+
+  --ruler:#0e1323;
+  --rulerLine:#24305a;
+  --marker:#ffffff;
 }
 
 *{ box-sizing:border-box; }
@@ -62,7 +66,7 @@ button:hover{ filter:brightness(1.1); }
 
 .grid{
   display:grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1.2fr 0.8fr;
   gap:12px;
   padding:12px;
 }
@@ -82,13 +86,50 @@ h2{
   color:var(--muted);
   font-weight:600;
 }
+.mt{ margin-top:14px; }
 
-.timeline{
-  height: calc(70vh - 130px);
+.timelineScroll{
+  position:relative;
+  height: calc(70vh - 210px);
   border:1px dashed #2a3564;
   border-radius:12px;
+  overflow:auto;            /* barra horizontal y vertical */
+  background:rgba(255,255,255,0.01);
+}
+
+.timeRuler{
+  position:sticky;
+  top:0;
+  z-index:3;
+  height:34px;
+  background:var(--ruler);
+  border-bottom:1px solid rgba(255,255,255,0.06);
+}
+
+.rulerInner{
   position:relative;
-  overflow:auto;
+  height:34px;
+}
+
+.rTick{
+  position:absolute;
+  top:0;
+  width:1px;
+  height:34px;
+  background:rgba(255,255,255,0.10);
+}
+.rTick.major{ background:rgba(255,255,255,0.20); }
+
+.rLabel{
+  position:absolute;
+  top:6px;
+  transform: translateX(-50%);
+  font-size:11px;
+  color:var(--muted);
+  white-space:nowrap;
+}
+
+.timeline{
   padding:8px;
 }
 
@@ -102,24 +143,23 @@ h2{
 .row:last-child{ border-bottom:none; }
 
 .label{
-  width:78px;
+  width:100px;
   color:var(--muted);
   font-size:12px;
   display:flex;
   flex-direction:column;
   gap:2px;
+  flex: 0 0 auto;
 }
 .label .id { color: var(--text); font-weight:600; }
 .label .meta { color: var(--muted); font-size:11px; }
 
 .track{
-  flex:1;
   height:14px;
   position:relative;
   background:rgba(255,255,255,0.03);
   border:1px solid rgba(255,255,255,0.06);
   border-radius:999px;
-  min-width: 900px;
 }
 
 .seg{
@@ -127,6 +167,18 @@ h2{
   top:0; bottom:0;
   border-radius:999px;
   opacity:0.95;
+}
+
+.nowMarker{
+  position:absolute;
+  top:34px;                 /* debajo del ruler */
+  bottom:0;
+  width:2px;
+  background:rgba(255,255,255,0.55);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.4);
+  z-index:2;
+  pointer-events:none;
+  transform: translateX(0px);
 }
 
 .legend{ margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; }
@@ -149,6 +201,54 @@ h2{
   font-size:12px;
   line-height:1.35;
 }
+
+/* Excel */
+.excelWrap{
+  border:1px solid rgba(255,255,255,0.08);
+  border-radius:12px;
+  overflow:auto;
+  max-height: 240px;
+  background: rgba(0,0,0,0.22);
+}
+
+.excelTable{
+  border-collapse:separate;
+  border-spacing:0;
+  min-width: 1200px;
+  width:100%;
+  font-size:12px;
+}
+
+.excelTable thead th{
+  position:sticky;
+  top:0;
+  z-index:2;
+  background:#0e1323;
+  color:var(--muted);
+  text-align:left;
+  padding:8px 10px;
+  border-bottom:1px solid rgba(255,255,255,0.10);
+  white-space:nowrap;
+}
+
+.excelTable tbody td{
+  padding:7px 10px;
+  border-bottom:1px solid rgba(255,255,255,0.06);
+  color:var(--text);
+  white-space:nowrap;
+}
+
+.badge{
+  display:inline-block;
+  padding:2px 8px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,0.12);
+  font-size:11px;
+  color:var(--text);
+}
+.ok{ background: color-mix(in srgb, #22c55e 25%, transparent); }
+.lw{ background: color-mix(in srgb, #f59e0b 25%, transparent); }
+.lc{ background: color-mix(in srgb, #ef4444 25%, transparent); }
 
 .viewport{
   height: calc(70vh - 40px);
