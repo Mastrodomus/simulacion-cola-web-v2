@@ -1,9 +1,22 @@
-// engine.js (event-driven)
-// Unidades: minutos. Reloj: minuto 0 = 00:00.
-// Recomendación: simStartMin = 8:00 (480) para jornada típica.
+// engine.js — Simulador Resonador (Agenda diaria, event-driven)
+// Unidades: minutos del día. Ej: 08:00 = 480, 19:51 = 1191, 20:00 = 1200.
+//
+// Reglas implementadas (según lo acordado):
+// - 24 pacientes por corrida (agenda de 24 turnos).
+// - Tipos de estudio: discreto probabilístico.
+// - Scan: Normal por tipo.
+// - Validación/Cambiador/Salida: Normal.
+// - Cambiador solo ocurre si resonador libre; resonador se ocupa CAMB + SCAN.
+// - Último inicio de resonador: 19:51 (hh:mm).
+// - Cierre: 20:00. Todo lo no completado se pierde (se fue a otro local).
+// - Sala de espera: 10 sillas.
+//   - Si al llegar está llena (>=10 en WAIT), se programa paciencia 60 min.
+//   - Si no avanza y sigue en WAIT cuando vence, abandona (perdido).
+//   - Si NO estaba llena al llegar, no abandona por espera (puede esperar).
+//
+// El motor produce estados para Timeline y 3D: WAIT, VALID, CAMB, SCAN, OUT.
 
 export function makeRng(seed = 42) {
-  // LCG simple determinista
   let s = (seed >>> 0) || 1;
   return () => {
     s = (1664525 * s + 1013904223) >>> 0;
@@ -37,7 +50,7 @@ class MinHeap {
   }
   pop(){
     const a = this.a;
-    if (a.length === 0) return null;
+    if (!a.length) return null;
     const top = a[0];
     const last = a.pop();
     if (a.length) {
@@ -61,17 +74,17 @@ class MinHeap {
 }
 
 const STUDIES = [
-  { id:"CEREBRO", label:"Cerebro",  p:0.30, mu:25, sigma:4 },
-  { id:"COLUMNA", label:"Columna",  p:0.25, mu:30, sigma:5 },
-  { id:"RODILLA", label:"Rodilla",  p:0.20, mu:20, sigma:3 },
-  { id:"ABDOMEN", label:"Abdomen",  p:0.15, mu:28, sigma:4 },
-  { id:"OTROS",   label:"Otros",    p:0.10, mu:22, sigma:3 },
+  { key:"Cerebro",  p:0.30, mu:25, sigma:4 },
+  { key:"Columna",  p:0.25, mu:30, sigma:5 },
+  { key:"Rodilla",  p:0.20, mu:20, sigma:3 },
+  { key:"Abdomen",  p:0.15, mu:28, sigma:4 },
+  { key:"Otros",    p:0.10, mu:22, sigma:3 },
 ];
 
 function pickStudy(rng){
   const u = rng();
   let acc = 0;
-  for (const s of STUDIES) {
+  for (const s of STUDIES){
     acc += s.p;
     if (u <= acc) return s;
   }
@@ -84,14 +97,19 @@ export function makeEngine(opts = {}) {
   const cfg = {
     seed: opts.seed ?? 42,
 
-    // Jornada
-    simStartMin: opts.simStartMin ?? (8*60),     // 08:00
-    closeMin:    opts.closeMin    ?? (20*60),    // 20:00
-    lastResoStartMin: opts.lastResoStartMin ?? (19*60 + 51), // 19:51 (hora reloj)
+    simStartMin: 8*60,              // 08:00
+    closeMin: 20*60,                // 20:00
+    lastResoStartMin: 19*60 + 51,   // 19:51 (hh:mm)
 
-    // Llegadas (si no tenés agenda de turnos real, esto simula flujo)
-    arrivalEveryMin: opts.arrivalEveryMin ?? 20,
-    arrivalJitterMin: opts.arrivalJitterMin ?? 5,
+    // Agenda del día
+    slotCount: 24,
+    minGapMin: 12,        // gap mínimo entre turnos asignados
+    slotJitterMin: 8,     // jitter para “humanizar” la agenda
+    // Llegada vs turno (offset en minutos): Normal clamp
+    arrivalOffsetMu: 0,
+    arrivalOffsetSigma: 6,
+    arrivalOffsetMin: -15,
+    arrivalOffsetMax: 20,
 
     // Procesos auxiliares (Normal)
     validMu: 5, validSigma: 1,
@@ -100,19 +118,19 @@ export function makeEngine(opts = {}) {
 
     // Espera
     waitCap: 10,
-    patienceMin: 60,
+    patienceMin: 60,      // se aplica SOLO si llegó con sala llena
+
+    // clamps
+    minProcessMin: 0.5,
 
     // Corrida
     targetDone: 24,
-
-    // clamps para evitar negativos
-    minStepMin: 0.5,
   };
 
-  // Waypoints (para 3D)
+  // Waypoints para 3D
   const waypoints = [
     { id:"WAIT",  name:"Sala de espera", x:-6, z:0 },
-    { id:"VALID", name:"Validación",     x:-4, z:0 },
+    { id:"VALID", name:"Validación",     x:-3.5, z:0 },
     { id:"CAMB",  name:"Cambiador",      x: 2, z:0 },
     { id:"SCAN",  name:"Resonador",      x: 6, z:0 },
     { id:"OUT",   name:"Salida",         x:10, z:0 },
@@ -123,39 +141,41 @@ export function makeEngine(opts = {}) {
   let idSeq = 1;
 
   const evq = new MinHeap();
-
   const entities = new Map(); // id -> entity
   const completed = [];
+
   const lost = {
-    byPatience: 0,
     byClose: 0,
-    byWaitCap: 0, // opcional si querés bloquear admisión estricta
+    byWait: 0
   };
 
-  // Colas / recursos
-  const waitQueue = [];  // FIFO ids (solo los que están sentados esperando)
-  const validQueue = []; // FIFO ids
-  let validBusy = false;
+  const stats = {
+    maxWaiters: 0,
+    lastResoStartActual: null
+  };
 
+  // Recursos / colas
+  let validBusy = false;
   let resonatorBusy = false;
-  let resonatorLockedOut = false; // cuando pasamos lastResoStart, ya no arranca nadie nuevo
+  let resonatorLockedOut = false;
+
+  const qWait = [];         // FIFO ids en WAIT (incluye pre y post validación)
+  const qWaitingForReso = [];// FIFO ids post-validación esperando resonador
 
   // ==== API pública ====
   function step(dtMin){
     const targetT = Math.min(t + dtMin, cfg.closeMin);
 
-    // ejecutar eventos hasta targetT
     while (evq.size && evq.peek().t <= targetT) {
       const ev = evq.pop();
       t = ev.t;
       handleEvent(ev);
-      if (isFinished()) break;
+
+      if (t >= cfg.closeMin) break;
     }
 
-    // avanzar tiempo “en vacío”
     t = targetT;
 
-    // si llegamos al cierre, perder a todos los no atendidos
     if (t >= cfg.closeMin) {
       flushCloseLoss();
     }
@@ -169,14 +189,17 @@ export function makeEngine(opts = {}) {
       entities: Array.from(entities.values()).map(e => ({
         id: e.id,
         state: e.state,
-        study: e.study.label,
-        createdAt: e.createdAt,
+        study: e.study.key,
+        apptAt: e.apptAt,
+        arrivalAt: e.arrivalAt,
+        arrivalOffset: e.arrivalOffset,
         timeline: e.timeline.map(s => ({...s})),
         pos: { ...e.pos },
         targetWp: e.targetWp,
       })),
       completedCount: completed.length,
-      lost: { ...lost }
+      lost: { ...lost },
+      stats: { ...stats }
     };
   }
 
@@ -186,168 +209,248 @@ export function makeEngine(opts = {}) {
 
     t = cfg.simStartMin;
     idSeq = 1;
+
     evq.a.length = 0;
     entities.clear();
     completed.length = 0;
-    lost.byPatience = 0;
+
     lost.byClose = 0;
-    lost.byWaitCap = 0;
-    waitQueue.length = 0;
-    validQueue.length = 0;
+    lost.byWait = 0;
+
+    stats.maxWaiters = 0;
+    stats.lastResoStartActual = null;
+
     validBusy = false;
     resonatorBusy = false;
     resonatorLockedOut = false;
 
-    // programar llegadas
-    scheduleArrival(t);
+    qWait.length = 0;
+    qWaitingForReso.length = 0;
+
+    programScheduleDay();
   }
+
+  function setSeed(seed){ reset(seed); }
 
   function setConfig(patch){
     Object.assign(cfg, patch);
+    // Re-armar la corrida para que aplique agenda nueva
+    reset(cfg.seed);
   }
 
-  function setSeed(seed){
-    reset(seed);
-  }
-
-  // ==== Inicialización ====
   reset(cfg.seed);
 
   return { step, getSnapshot, reset, setSeed, setConfig };
 
   // ======================
-  //      Eventos
+  //    Agenda del día
   // ======================
 
-  function schedule(ev){
-    evq.push(ev);
+  function programScheduleDay(){
+    // Armamos 24 turnos entre 08:00 y 19:51, con el último fijo en 19:51
+    const slots = buildAppointmentSlots(
+      cfg.simStartMin,
+      cfg.lastResoStartMin,
+      cfg.slotCount,
+      cfg.minGapMin,
+      cfg.slotJitterMin
+    );
+
+    for (let i = 0; i < slots.length; i++){
+      const apptAt = slots[i];
+
+      const offset = clamp(
+        normal(rng, cfg.arrivalOffsetMu, cfg.arrivalOffsetSigma),
+        cfg.arrivalOffsetMin,
+        cfg.arrivalOffsetMax
+      );
+
+      const arrivalAt = clamp(apptAt + offset, cfg.simStartMin, cfg.closeMin);
+
+      schedule({ t: arrivalAt, type:"ARRIVAL", apptAt, offset });
+    }
   }
 
-  function scheduleArrival(now){
-    const dt = sampleArrivalDelta();
-    const at = now + dt;
-    if (at <= cfg.closeMin) schedule({ t: at, type:"ARRIVAL" });
+  function buildAppointmentSlots(startMin, lastStartMin, n, minGap, jitter){
+    // Distribución suave + jitter, asegurando:
+    // - slots crecientes
+    // - gap mínimo
+    // - último slot EXACTO en lastStartMin
+    if (n < 2) return [lastStartMin];
+
+    const slots = new Array(n);
+    slots[n - 1] = lastStartMin;
+
+    // Distribuir los primeros n-1 en [startMin, lastStartMin - minGap]
+    const endForOthers = lastStartMin - minGap;
+    const span = Math.max(1, endForOthers - startMin);
+
+    for (let i = 0; i < n - 1; i++){
+      const frac = i / (n - 2); // 0..1
+      let base = startMin + frac * span;
+
+      // jitter simétrico, con menor jitter cerca de los bordes
+      const edgeFactor = 0.35 + 0.65 * Math.sin(Math.PI * frac); // 0.35..1..0.35
+      const j = (rng()*2 - 1) * jitter * edgeFactor;
+
+      slots[i] = base + j;
+    }
+
+    // Ordenar y aplicar gap mínimo
+    slots.slice(0, n-1).sort((a,b)=>a-b).forEach((v, idx) => slots[idx] = v);
+
+    // Clamp y monotonicidad con gap
+    slots[0] = Math.max(slots[0], startMin);
+    for (let i = 1; i < n - 1; i++){
+      slots[i] = Math.max(slots[i], slots[i-1] + minGap);
+    }
+
+    // Asegurar que el penúltimo no choque con el último
+    slots[n-2] = Math.min(slots[n-2], lastStartMin - minGap);
+
+    // Re-corregir gaps si quedó apretado
+    for (let i = n - 3; i >= 0; i--){
+      slots[i] = Math.min(slots[i], slots[i+1] - minGap);
+    }
+
+    // Y el último fijo
+    slots[n - 1] = lastStartMin;
+
+    return slots;
   }
 
-  function sampleArrivalDelta(){
-    const jitter = (rng() * 2 - 1) * cfg.arrivalJitterMin;
-    return Math.max(1, cfg.arrivalEveryMin + jitter);
-  }
+  // ======================
+  //        Eventos
+  // ======================
+
+  function schedule(ev){ evq.push(ev); }
 
   function handleEvent(ev){
     switch (ev.type) {
-      case "ARRIVAL": onArrival(); break;
+      case "ARRIVAL": onArrival(ev); break;
       case "END_VALID": onEndValid(ev.id); break;
-      case "PATIENCE_EXPIRE": onPatienceExpire(ev.id); break;
-      case "END_CHANGING": onEndChanging(ev.id); break;
+      case "END_CAMB": onEndCamb(ev.id); break;
       case "END_SCAN": onEndScan(ev.id); break;
       case "END_EXIT": onEndExit(ev.id); break;
+      case "PATIENCE_EXPIRE": onPatienceExpire(ev.id); break;
       default: break;
     }
   }
 
-  function onArrival(){
-    if (isFinished()) return;
+  function onArrival(ev){
+    // Si ya cerramos o ya no hay mundo, igual lo ignoramos
+    if (t >= cfg.closeMin) return;
 
-    // Generar paciente
     const study = pickStudy(rng);
     const e = createEntity(study);
+
+    e.apptAt = ev.apptAt;
+    e.arrivalOffset = ev.offset;
+    e.arrivalAt = t;
+
     entities.set(e.id, e);
 
-    // Sala de espera (10 sillas)
-    // Interpretación: WAIT = sentado esperando turno (para validación o para resonador).
-    if (countWaiters() >= cfg.waitCap) {
-      // En tu operación normal "no debería pasar", pero si pasa:
-      // el paciente NO se va instantáneo: se va a 60 min si no avanza.
-      // Para no inventar “sillas invisibles”, lo dejamos en WAIT igual,
-      // pero marcamos overflow en KPI opcional.
-      // Si querés bloqueo estricto (no entra): descomentá las 3 líneas.
-      // lost.byWaitCap++; entities.delete(e.id); return;
+    // Entrar a WAIT (sala)
+    enterState(e, "WAIT");
+    qWait.push(e.id);
 
-      // KPI de saturación (no es pérdida, es señal)
-      // (si querés un KPI separado, lo agregamos luego)
+    // Si la sala ya estaba llena (>=10) al momento de llegar,
+    // se programa paciencia de 60 min (abandono si no avanza).
+    const waitersNow = countState("WAIT");
+    stats.maxWaiters = Math.max(stats.maxWaiters, waitersNow);
+
+    if (waitersNow >= cfg.waitCap) {
+      e.patienceDeadline = t + cfg.patienceMin;
+      schedule({ t: e.patienceDeadline, type:"PATIENCE_EXPIRE", id: e.id });
+    } else {
+      e.patienceDeadline = null;
     }
 
-    enterState(e, "WAIT");
-
-    // paciencia: 60 min
-    schedule({ t: t + cfg.patienceMin, type:"PATIENCE_EXPIRE", id: e.id });
-
-    // Entra a cola de validación cuando haya slot
-    waitQueue.push(e.id);
+    // Intentar arrancar validación si está libre
     tryStartValidation();
-
-    // Programar próxima llegada
-    scheduleArrival(t);
   }
 
   function tryStartValidation(){
     if (validBusy) return;
-    if (waitQueue.length === 0) return;
 
-    const id = waitQueue.shift();
-    const e = entities.get(id);
-    if (!e) return;
-    if (e.state !== "WAIT") return;
+    // Buscar el primer paciente en WAIT que aún no haya validado
+    // (mantenemos una cola FIFO qWait)
+    while (qWait.length) {
+      const id = qWait.shift();
+      const e = entities.get(id);
+      if (!e) continue;
+      if (e.state !== "WAIT") continue;
+      if (e.hasValidated) continue; // ya validó, este WAIT es por resonador
 
-    validBusy = true;
-    enterState(e, "VALID");
+      validBusy = true;
+      enterState(e, "VALID");
 
-    const dur = sampleProcess(cfg.validMu, cfg.validSigma);
-    schedule({ t: t + dur, type:"END_VALID", id });
+      const dur = sampleProcess(cfg.validMu, cfg.validSigma);
+      schedule({ t: t + dur, type:"END_VALID", id });
+      return;
+    }
   }
 
   function onEndValid(id){
     validBusy = false;
+
     const e = entities.get(id);
     if (!e) { tryStartValidation(); return; }
     if (e.state !== "VALID") { tryStartValidation(); return; }
 
-    // Luego de validación, queda esperando resonador
+    e.hasValidated = true;
+
+    // vuelve a WAIT pero ahora en cola “espera resonador”
     enterState(e, "WAIT");
-    waitQueue.push(id);
+    qWaitingForReso.push(id);
 
-    tryStartValidation(); // sigue la validación con el siguiente si hay
+    // actualizar pico de waiters
+    stats.maxWaiters = Math.max(stats.maxWaiters, countState("WAIT"));
 
+    // seguir con validación del siguiente
+    tryStartValidation();
+
+    // e intentar meter al resonador
     tryStartResonator();
   }
 
   function tryStartResonator(){
     if (resonatorBusy) return;
 
-    // regla: no iniciar después de 19:51
+    // Regla de corte: no iniciar después de 19:51
     if (t > cfg.lastResoStartMin) {
       resonatorLockedOut = true;
-      // los que queden se perderán por cierre (o podemos marcarlos ya)
       return;
     }
     if (resonatorLockedOut) return;
 
-    // tomar primer paciente WAIT (FIFO) que esté esperando por resonador
-    // Nota: compartimos waitQueue entre “espera general” y “espera por resonador”.
-    // El que está en VALID no está en waitQueue.
-    while (waitQueue.length) {
-      const id = waitQueue.shift();
+    // Tomar FIFO post-validación
+    while (qWaitingForReso.length) {
+      const id = qWaitingForReso.shift();
       const e = entities.get(id);
       if (!e) continue;
       if (e.state !== "WAIT") continue;
+      if (!e.hasValidated) continue;
 
-      // ahora sí: “entra al cambiador” porque resonador libre
+      // Arranque real de resonador (marca)
+      stats.lastResoStartActual = t;
+
+      // Cambiador (resonador ocupado a partir de aquí)
       resonatorBusy = true;
       enterState(e, "CAMB");
 
       const durC = sampleProcess(cfg.cambMu, cfg.cambSigma);
-      schedule({ t: t + durC, type:"END_CHANGING", id });
+      schedule({ t: t + durC, type:"END_CAMB", id });
       return;
     }
   }
 
-  function onEndChanging(id){
+  function onEndCamb(id){
     const e = entities.get(id);
     if (!e) { resonatorBusy = false; tryStartResonator(); return; }
     if (e.state !== "CAMB") { resonatorBusy = false; tryStartResonator(); return; }
 
-    // iniciar scan (resonador sigue ocupado)
+    // Scan (resonador sigue ocupado)
     enterState(e, "SCAN");
 
     const durS = sampleProcess(e.study.mu, e.study.sigma);
@@ -359,15 +462,15 @@ export function makeEngine(opts = {}) {
     if (!e) { resonatorBusy = false; tryStartResonator(); return; }
     if (e.state !== "SCAN") { resonatorBusy = false; tryStartResonator(); return; }
 
-    // resonador se libera al terminar scan
+    // Resonador se libera al finalizar el scan
     resonatorBusy = false;
 
-    // salida (no bloquea resonador)
+    // salida (no bloquea)
     enterState(e, "OUT");
     const durE = sampleProcess(cfg.exitMu, cfg.exitSigma);
     schedule({ t: t + durE, type:"END_EXIT", id });
 
-    // intentar meter otro al resonador, respetando cutoff
+    // intentar meter otro, respetando corte
     tryStartResonator();
   }
 
@@ -386,19 +489,21 @@ export function makeEngine(opts = {}) {
     const e = entities.get(id);
     if (!e) return;
 
-    // solo se va si sigue en WAIT
+    // Abandona SOLO si sigue en WAIT
     if (e.state === "WAIT") {
-      // removerlo de waitQueue si está (O(n), pero N pequeño)
-      removeFromQueue(waitQueue, id);
-
+      // Se pierde (se fue a otro centro)
       closeSegment(e);
       entities.delete(id);
-      lost.byPatience++;
+      lost.byWait++;
+
+      // Limpiar de colas si estaba
+      removeFromQueue(qWait, id);
+      removeFromQueue(qWaitingForReso, id);
     }
   }
 
   // ======================
-  //     Helpers
+  //        Helpers
   // ======================
 
   function createEntity(study){
@@ -406,9 +511,14 @@ export function makeEngine(opts = {}) {
     return {
       id,
       study,
-      createdAt: t,
+      apptAt: null,
+      arrivalAt: null,
+      arrivalOffset: null,
+
+      hasValidated: false,
+      patienceDeadline: null,
+
       state: "NEW",
-      stateEnterAt: t,
       timeline: [],
       pos: { x: waypoints[0].x, z: waypoints[0].z },
       targetWp: "WAIT"
@@ -416,21 +526,18 @@ export function makeEngine(opts = {}) {
   }
 
   function enterState(e, newState){
-    // cerrar segmento anterior si está abierto
     closeSegment(e);
 
     e.state = newState;
-    e.stateEnterAt = t;
     e.timeline.push({ stage:newState, start:t, end:null });
 
-    // waypoint target
+    // waypoint
     e.targetWp = newState;
-    // “VALID” tiene waypoint distinto
-    if (newState === "VALID") e.targetWp = "VALID";
-    if (newState === "WAIT")  e.targetWp = "WAIT";
-    if (newState === "CAMB")  e.targetWp = "CAMB";
-    if (newState === "SCAN")  e.targetWp = "SCAN";
-    if (newState === "OUT")   e.targetWp = "OUT";
+
+    // actualizar pico de waiters cuando corresponda
+    if (newState === "WAIT") {
+      stats.maxWaiters = Math.max(stats.maxWaiters, countState("WAIT"));
+    }
   }
 
   function closeSegment(e){
@@ -440,7 +547,15 @@ export function makeEngine(opts = {}) {
 
   function sampleProcess(mu, sigma){
     const v = normal(rng, mu, sigma);
-    return Math.max(cfg.minStepMin, v);
+    return Math.max(cfg.minProcessMin, v);
+  }
+
+  function countState(state){
+    let c = 0;
+    for (const e of entities.values()){
+      if (e.state === state) c++;
+    }
+    return c;
   }
 
   function removeFromQueue(q, id){
@@ -448,33 +563,20 @@ export function makeEngine(opts = {}) {
     if (i >= 0) q.splice(i, 1);
   }
 
-  function countWaiters(){
-    // contador “real” de pacientes en WAIT (sillas)
-    let c = 0;
-    for (const e of entities.values()) if (e.state === "WAIT") c++;
-    return c;
-  }
-
   function flushCloseLoss(){
-    // Al cierre, todo lo no completado se pierde (se fue a otro local)
-    if (entities.size === 0) return;
+    // al cierre, todo lo no completado se pierde
+    if (!entities.size) return;
 
-    // marcar pérdida por cierre para todos los activos
-    for (const e of entities.values()) {
+    for (const e of entities.values()){
       closeSegment(e);
       lost.byClose++;
     }
+
     entities.clear();
-    waitQueue.length = 0;
-    validQueue.length = 0;
+    qWait.length = 0;
+    qWaitingForReso.length = 0;
     validBusy = false;
     resonatorBusy = false;
     resonatorLockedOut = true;
-  }
-
-  function isFinished(){
-    // si querés “corrida = 24 completados sí o sí”, esto lo dejamos.
-    // Pero con regla de cierre, puede terminar antes si no llega.
-    return completed.length >= cfg.targetDone;
   }
 }
