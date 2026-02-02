@@ -8,7 +8,7 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="title">Simulador Resonador</div>
+    <div class="title">Simulador Resonador (Agenda diaria)</div>
 
     <div class="controls">
       <button id="btnStart">▶ Start</button>
@@ -17,8 +17,8 @@
 
       <label class="field">
         <span>Velocidad</span>
-        <input id="speed" type="range" min="0.25" max="5" step="0.25" value="1" />
-        <span id="speedVal">1.00×</span>
+        <input id="speed" type="range" min="0.25" max="10" step="0.25" value="2" />
+        <span id="speedVal">2.00×</span>
       </label>
 
       <label class="field">
@@ -32,22 +32,33 @@
     <section class="panel">
       <h2>Timeline 2D</h2>
       <div id="timeline" class="timeline"></div>
+
       <div class="legend">
         <span class="chip c-wait">Espera</span>
-        <span class="chip c-mesa">Mesa</span>
+        <span class="chip c-valid">Validación</span>
         <span class="chip c-camb">Cambiador</span>
-        <span class="chip c-scan">Resonador</span>
+        <span class="chip c-scan">Resonador/Scan</span>
         <span class="chip c-out">Salida</span>
+      </div>
+
+      <div class="notes">
+        <div>Reglas: último inicio resonador <b>19:51</b>, cierre <b>20:00</b>, sala espera <b>10</b> sillas.</div>
+        <div>Paciente abandona (60 min) <b>solo</b> si llegó cuando la sala ya estaba llena.</div>
       </div>
     </section>
 
     <section class="panel">
       <h2>Vista 3D (layout + waypoints)</h2>
       <div id="viewport" class="viewport"></div>
+
       <div class="hud">
-        <div><b>t</b>: <span id="hudTime">0.0</span> min</div>
+        <div><b>Hora</b>: <span id="hudTime">08:00</span></div>
         <div><b>En sistema</b>: <span id="hudInSys">0</span></div>
         <div><b>Completados</b>: <span id="hudDone">0</span></div>
+        <div><b>Perdidos (cierre)</b>: <span id="hudLostClose">0</span></div>
+        <div><b>Perdidos (espera)</b>: <span id="hudLostWait">0</span></div>
+        <div><b>Máx WAIT</b>: <span id="hudMaxWait">0</span></div>
+        <div><b>Último start resonador</b>: <span id="hudLastStart">--:--</span></div>
       </div>
     </section>
   </main>
