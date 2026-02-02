@@ -1,4 +1,4 @@
-// app.js
+// app.js — UI (Timeline 2D + Three.js 3D)
 import * as THREE from "three";
 import { makeEngine, clamp } from "./engine.js";
 
@@ -8,6 +8,7 @@ const elViewport = document.getElementById("viewport");
 const btnStart = document.getElementById("btnStart");
 const btnPause = document.getElementById("btnPause");
 const btnReset = document.getElementById("btnReset");
+
 const elSpeed = document.getElementById("speed");
 const elSpeedVal = document.getElementById("speedVal");
 const elSeed = document.getElementById("seed");
@@ -15,17 +16,32 @@ const elSeed = document.getElementById("seed");
 const hudTime = document.getElementById("hudTime");
 const hudInSys = document.getElementById("hudInSys");
 const hudDone = document.getElementById("hudDone");
+const hudLostClose = document.getElementById("hudLostClose");
+const hudLostWait = document.getElementById("hudLostWait");
+const hudMaxWait = document.getElementById("hudMaxWait");
+const hudLastStart = document.getElementById("hudLastStart");
 
 const STAGE_COLOR = {
-  WAIT: getCss("--wait"),
-  MESA: getCss("--mesa"),
-  CAMB: getCss("--camb"),
-  SCAN: getCss("--scan"),
-  OUT:  getCss("--out")
+  WAIT:  getCss("--wait"),
+  VALID: getCss("--valid"),
+  CAMB:  getCss("--camb"),
+  SCAN:  getCss("--scan"),
+  OUT:   getCss("--out")
 };
 
 function getCss(varName){
   return getComputedStyle(document.documentElement).getPropertyValue(varName).trim() || "#999";
+}
+
+function fmtHHMM(minDay){
+  const h = Math.floor(minDay / 60);
+  const m = Math.floor(minDay % 60);
+  return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`;
+}
+
+function fmtSignedMin(x){
+  const s = x >= 0 ? "+" : "";
+  return `${s}${x.toFixed(1)}m`;
 }
 
 // ===== Engine =====
@@ -33,12 +49,19 @@ let engine = makeEngine({ seed: Number(elSeed.value || 42) });
 
 // ===== Timeline 2D =====
 function renderTimeline(snapshot){
-  // Escala: 1 minuto = 8px (ajustable)
-  const pxPerMin = 8;
-  const tMax = Math.max(60, snapshot.t); // al menos 60 min visibles
+  // Escala: 1 min = 6px (ajustable)
+  const pxPerMin = 6;
 
-  // mostrar los activos + (opcional) últimos completados: por ahora solo activos
-  const rows = snapshot.entities;
+  const t0 = snapshot.cfg.simStartMin;
+  const t1 = snapshot.cfg.closeMin;
+  const span = t1 - t0;
+
+  // Ordenar pacientes por id numérico
+  const rows = snapshot.entities.slice().sort((a,b) => {
+    const ai = Number(a.id.slice(1));
+    const bi = Number(b.id.slice(1));
+    return ai - bi;
+  });
 
   elTimeline.innerHTML = "";
 
@@ -48,21 +71,34 @@ function renderTimeline(snapshot){
 
     const label = document.createElement("div");
     label.className = "label";
-    label.textContent = e.id;
+
+    const idDiv = document.createElement("div");
+    idDiv.className = "id";
+    idDiv.textContent = e.id;
+
+    const metaDiv = document.createElement("div");
+    metaDiv.className = "meta";
+
+    const appt = (e.apptAt != null) ? fmtHHMM(e.apptAt) : "--:--";
+    const arr  = (e.arrivalAt != null) ? fmtHHMM(e.arrivalAt) : "--:--";
+    const off  = (e.arrivalOffset != null) ? fmtSignedMin(e.arrivalOffset) : "";
+    metaDiv.textContent = `${e.study} | T:${appt} L:${arr} ${off}`;
+
+    label.appendChild(idDiv);
+    label.appendChild(metaDiv);
 
     const track = document.createElement("div");
     track.className = "track";
-    track.style.width = `${tMax * pxPerMin}px`;
+    track.style.width = `${span * pxPerMin}px`;
 
-    // segmentos
     e.timeline.forEach(seg => {
-      const start = seg.start;
-      const end = (seg.end == null) ? snapshot.t : seg.end;
+      const start = clamp(seg.start, t0, t1);
+      const end = clamp(seg.end ?? snapshot.t, t0, t1);
       const w = Math.max(1, (end - start) * pxPerMin);
 
       const div = document.createElement("div");
       div.className = "seg";
-      div.style.left = `${start * pxPerMin}px`;
+      div.style.left = `${(start - t0) * pxPerMin}px`;
       div.style.width = `${w}px`;
       div.style.background = STAGE_COLOR[seg.stage] || "#777";
       track.appendChild(div);
@@ -99,38 +135,28 @@ const floor = new THREE.Mesh(
 floor.rotation.x = -Math.PI / 2;
 scene.add(floor);
 
-// Layout real (placeholder geométrico): sala espera, mesa, cambiador, resonador, salida
+// Layout (placeholder geométrico)
 const layout = new THREE.Group();
 scene.add(layout);
 
-function addStation(name, x, z, w, d, colorHex){
+function addStation(x, z, w, d, colorHex){
   const box = new THREE.Mesh(
     new THREE.BoxGeometry(w, 1.2, d),
     new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.85 })
   );
   box.position.set(x, 0.6, z);
-  box.userData.name = name;
   layout.add(box);
-
-  // etiqueta simple (sprite no; dejamos minimal): poste
-  const pole = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.05, 0.05, 1.5, 12),
-    new THREE.MeshStandardMaterial({ color: 0x94a3b8 })
-  );
-  pole.position.set(x, 0.75, z - d/2 - 0.6);
-  layout.add(pole);
 }
 
-addStation("Espera",   -6, 0, 5, 4, 0x1f3b8a);
-addStation("Mesa",     -2, 0, 3, 2, 0x14532d);
-addStation("Cambiador", 2, 0, 3, 2, 0x7c4a03);
-addStation("Resonador", 6, 0, 4, 3, 0x7f1d1d);
-addStation("Salida",   10, 0, 2.5, 2, 0x334155);
+addStation(-6, 0, 5, 4, 0x1f3b8a); // WAIT
+addStation(-3.5, 0, 3, 2, 0x14532d); // VALID
+addStation( 2, 0, 3, 2, 0x7c4a03); // CAMB
+addStation( 6, 0, 4, 3, 0x7f1d1d); // SCAN
+addStation(10, 0, 2.5, 2, 0x334155); // OUT
 
 // Waypoints visibles
 const wpMeshes = new Map();
 function renderWaypoints(wps){
-  // limpiar viejos
   for (const m of wpMeshes.values()) scene.remove(m);
   wpMeshes.clear();
 
@@ -145,13 +171,13 @@ function renderWaypoints(wps){
   });
 }
 
-// Pacientes (bolitas)
+// Pacientes
 const patientMeshes = new Map();
-function ensurePatientMesh(id, colorHex){
+function ensurePatientMesh(id){
   if (patientMeshes.has(id)) return patientMeshes.get(id);
   const m = new THREE.Mesh(
     new THREE.SphereGeometry(0.25, 18, 18),
-    new THREE.MeshStandardMaterial({ color: colorHex, roughness:0.5 })
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness:0.5 })
   );
   m.position.set(-6, 0.25, 0);
   scene.add(m);
@@ -172,13 +198,12 @@ function stageToHex(stage){
   return parseInt(c.replace("#","0x"));
 }
 
-// movimiento hacia waypoint
-function moveTowards(mesh, target, speedPerSec){
+function moveTowards(mesh, target, speedPerFrame){
   const dx = target.x - mesh.position.x;
   const dz = target.z - mesh.position.z;
   const dist = Math.hypot(dx, dz);
   if (dist < 1e-3) return;
-  const step = Math.min(dist, speedPerSec);
+  const step = Math.min(dist, speedPerFrame);
   mesh.position.x += (dx / dist) * step;
   mesh.position.z += (dz / dist) * step;
 }
@@ -196,7 +221,7 @@ resize();
 // ===== Loop =====
 let running = false;
 let lastMs = performance.now();
-let speed = Number(elSpeed.value || 1);
+let speed = Number(elSpeed.value || 2);
 
 elSpeed.addEventListener("input", () => {
   speed = Number(elSpeed.value || 1);
@@ -209,27 +234,36 @@ btnPause.onclick = () => running = false;
 btnReset.onclick = () => {
   running = false;
   engine = makeEngine({ seed: Number(elSeed.value || 42) });
-  // limpiar meshes pacientes
+
+  // limpiar meshes
   for (const m of patientMeshes.values()) scene.remove(m);
   patientMeshes.clear();
+  wpMeshes.clear();
 };
 
 function tick(nowMs){
   const dtSec = (nowMs - lastMs) / 1000;
   lastMs = nowMs;
 
-  // Sim: convertir a minutos
+  // Simulación: 1s real ~= 1min sim * speed (rápido a propósito)
   if (running) {
-    const dtMin = (dtSec * speed) / 1.0; // 1 sec real = 1 min sim a speed=1 (rápido a propósito)
+    const dtMin = (dtSec * speed) * 1.0;
     engine.step(dtMin);
   }
 
   const snap = engine.getSnapshot();
 
   // HUD
-  hudTime.textContent = snap.t.toFixed(1);
+  hudTime.textContent = fmtHHMM(snap.t);
   hudInSys.textContent = String(snap.entities.length);
   hudDone.textContent = String(snap.completedCount);
+  hudLostClose.textContent = String(snap.lost.byClose);
+  hudLostWait.textContent = String(snap.lost.byWait);
+  hudMaxWait.textContent = String(snap.stats.maxWaiters);
+  hudLastStart.textContent = snap.stats.lastResoStartActual != null ? fmtHHMM(snap.stats.lastResoStartActual) : "--:--";
+
+  // auto-pausa al cierre
+  if (snap.t >= snap.cfg.closeMin) running = false;
 
   // Timeline
   renderTimeline(snap);
@@ -237,18 +271,16 @@ function tick(nowMs){
   // Waypoints
   if (wpMeshes.size === 0) renderWaypoints(snap.waypoints);
 
-  // 3D: pacientes
+  // 3D pacientes
   const active = new Set(snap.entities.map(e => e.id));
   removeMissingPatients(active);
 
   snap.entities.forEach(e => {
-    const mesh = ensurePatientMesh(e.id, stageToHex(e.state));
-    // actualizar color por estado
+    const mesh = ensurePatientMesh(e.id);
     mesh.material.color.setHex(stageToHex(e.state));
 
     const wp = snap.waypoints.find(w => w.id === e.targetWp) || snap.waypoints[0];
-    // velocidad de desplazamiento visual (metros por frame)
-    const visualSpeed = clamp(3 * dtSec, 0.02, 0.2);
+    const visualSpeed = clamp(3 * dtSec, 0.02, 0.25);
     moveTowards(mesh, wp, visualSpeed);
   });
 
