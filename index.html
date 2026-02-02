@@ -31,7 +31,13 @@
   <main class="grid">
     <section class="panel">
       <h2>Timeline 2D</h2>
-      <div id="timeline" class="timeline"></div>
+
+      <!-- Scroll horizontal real (barra) + regla de horas + marca de hora actual -->
+      <div id="timelineScroll" class="timelineScroll">
+        <div id="timeRuler" class="timeRuler"></div>
+        <div id="timeline" class="timeline"></div>
+        <div id="nowMarker" class="nowMarker" aria-hidden="true"></div>
+      </div>
 
       <div class="legend">
         <span class="chip c-wait">Espera</span>
@@ -43,7 +49,15 @@
 
       <div class="notes">
         <div>Reglas: último inicio resonador <b>19:51</b>, cierre <b>20:00</b>, sala espera <b>10</b> sillas.</div>
-        <div>Paciente abandona (60 min) <b>solo</b> si llegó cuando la sala ya estaba llena.</div>
+        <div>Abandono (60 min) <b>solo</b> si el paciente llegó cuando la sala ya estaba llena.</div>
+      </div>
+
+      <h2 class="mt">Excel del día (24 turnos)</h2>
+      <div id="excelWrap" class="excelWrap">
+        <table id="excelTable" class="excelTable">
+          <thead id="excelHead"></thead>
+          <tbody id="excelBody"></tbody>
+        </table>
       </div>
     </section>
 
